@@ -25,5 +25,7 @@ go.work.sum
 .env
 
 # mail files
-.eml
-.mbox
+*.eml
+*.mbox
+
+.DS_Store
