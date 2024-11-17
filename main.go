@@ -9,69 +9,106 @@ import (
 	"strconv"
 )
 
+type emailStartMap = map[int]bool
+
+const NEW_EMAIL_REGEX = `^From\s(\d+@\w+)\s(\w{3})\s(\w{3})\s(\d{2})\s(\d{2}:\d{2}:\d{2})\s([\+\-]\d{4})\s(\d{4})$`
+
+const CREATED_FILE_PERMISSIONS = 0644
+const CREATED_FILE_PREFIX = "converted_"
+const CREATED_FILE_EXTENSION = ".eml"
+
 func main() {
-	fileToConvert := "toConvert.mbox"
-	writeFilePrefix := "converted_"
-	writeFileExt := ".eml"
-	var fileToWright *os.File
-	var fileWriter *bufio.Writer
-	starts := map[int]bool{}
-	limit := 30
-	processed := 0
+	fileToConvertName := "toConvert.mbox"
 
-	file, err := os.Open(fileToConvert)
-	check(err)
+	emailStartMap := getEmailStartMap(fileToConvertName)
 
-	fileScanner := bufio.NewScanner(file)
+	converEmails(fileToConvertName, emailStartMap)
+}
 
-	fileScanner.Split(bufio.ScanLines)
-	pattern := `^From\s(\d+@\w+)\s(\w{3})\s(\w{3})\s(\d{2})\s(\d{2}:\d{2}:\d{2})\s([\+\-]\d{4})\s(\d{4})$`
+func getEmailStartMap(fileToConvertName string) emailStartMap {
+	emailMap := emailStartMap{}
 
-	// Compile the regex
-	regex := regexp.MustCompile(pattern)
+	file := openFile(fileToConvertName)
+	fileScanner := createFileScanner(file)
+	defer file.Close()
 
 	for i := 0; fileScanner.Scan(); i++ {
 		line := fileScanner.Text()
-		isNewEmail := regex.MatchString(line)
+		isNewEmail := checkNewEmailStart(line)
 
 		if isNewEmail {
-			starts[i] = true
+			emailMap[i] = true
 		}
 	}
 
-	file.Close()
+	return emailMap
+}
 
-	file, err = os.Open(fileToConvert)
-	check(err)
+func checkNewEmailStart(line string) bool {
+	regex := regexp.MustCompile(NEW_EMAIL_REGEX)
+	isNewEmail := regex.MatchString(line)
+
+	return isNewEmail
+}
+
+func converEmails(fileToConvertName string, emailMap emailStartMap) {
+	var fileWriter *bufio.Writer
+	processed := 0
+
+	file := openFile(fileToConvertName)
+	fileScanner := createFileScanner(file)
 	defer file.Close()
-
-	fileScanner = bufio.NewScanner(file)
-
-	fileScanner.Split(bufio.ScanLines)
 
 	for i := 0; fileScanner.Scan(); i++ {
 		line := fileScanner.Text()
-		isNewMail := starts[i]
+		isNewMail := emailMap[i]
 
 		if isNewMail {
 			processed++
-			if fileWriter != nil {
-				fileWriter.Flush()
-			}
-			if processed >= limit {
-				break
-			}
-			fileName := writeFilePrefix + strconv.Itoa(processed) + writeFileExt
-			fileToWright, err = os.OpenFile(fileName, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
-			check(err)
-			fileWriter = bufio.NewWriter(fileToWright)
-			fmt.Println("Start converting: " + fileName)
+			fileWriter = setWriterToNewEmail(fileWriter, processed)
 		}
 
-		fileWriter.WriteString(line + "\n")
-
+		if fileWriter != nil {
+			fileWriter.WriteString(line + "\n")
+		}
 	}
+}
 
+func createFileScanner(file *os.File) *bufio.Scanner {
+	fileScanner := bufio.NewScanner(file)
+	fileScanner.Split(bufio.ScanLines)
+
+	return fileScanner
+}
+func openFile(fileName string) *os.File {
+	file, err := os.Open(fileName)
+	check(err)
+
+	return file
+}
+
+func setWriterToNewEmail(fileWriter *bufio.Writer, number int) *bufio.Writer {
+	if fileWriter != nil {
+		fileWriter.Flush()
+	}
+	fileName := buildSavePathName(strconv.Itoa(number))
+	fileWriter = createNewEmailFile(fileName)
+
+	return fileWriter
+}
+
+func createNewEmailFile(fileName string) *bufio.Writer {
+	fileToWright, err := os.OpenFile(fileName, os.O_APPEND|os.O_WRONLY|os.O_CREATE, CREATED_FILE_PERMISSIONS)
+	check(err)
+
+	fileWriter := bufio.NewWriter(fileToWright)
+	fmt.Println("Start converting: " + fileName)
+
+	return fileWriter
+}
+
+func buildSavePathName(number string) string {
+	return CREATED_FILE_PREFIX + number + CREATED_FILE_EXTENSION
 }
 
 func check(err error) {
