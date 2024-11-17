@@ -2,9 +2,12 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 )
@@ -13,28 +16,63 @@ type emailStartMap = map[int]bool
 
 const NEW_EMAIL_REGEX = `^From\s(\d+@\w+)\s(\w{3})\s(\w{3})\s(\d{2})\s(\d{2}:\d{2}:\d{2})\s([\+\-]\d{4})\s(\d{4})$`
 
-const CREATED_FILE_PERMISSIONS = 0644
-const CREATED_FILE_PREFIX = "converted_"
-const CREATED_FILE_EXTENSION = ".eml"
+const DEFAULT_CREATED_FILE_PERMISSIONS = 0644
+const DEFAULT_CREATED_FILE_PREFIX = "converted_"
+const DEFAULT_CREATED_FILE_EXTENSION = ".eml"
 
-func main() {
-	fileToConvertName := "toConvert.mbox"
-
-	emailStartMap := getEmailStartMap(fileToConvertName)
-
-	converEmails(fileToConvertName, emailStartMap)
+type Config struct {
+	ConvertFrom              string
+	SaveFolder               string
+	ConvertedFilePrefix      string
+	ConvertedFilePermissions uint64
+	NewEmailPattern          *regexp.Regexp
 }
 
-func getEmailStartMap(fileToConvertName string) emailStartMap {
+func main() {
+	config := createConfig()
+	emailStartMap := getEmailStartMap(config)
+	convertEmails(emailStartMap, config)
+}
+
+func createConfig() *Config {
+	convertFrom := flag.String("from", "", "File to convert from")
+	destinationFolder := flag.String("toFolder", "", "Folder save to")
+	convertedFilePrefix := flag.String("prefix", DEFAULT_CREATED_FILE_PREFIX, "converted file prefix")
+	convertedFilePermissions := flag.Uint64("permissions", DEFAULT_CREATED_FILE_PERMISSIONS, "converted file permissions")
+
+	flag.Parse()
+
+	if *convertFrom == "" {
+		log.Fatal("Missing file to convert")
+	}
+
+	if *destinationFolder == "" {
+		log.Fatal("Missing destinationFolder")
+	}
+
+	newEmailRegex := regexp.MustCompile(NEW_EMAIL_REGEX)
+
+	config := &Config{
+		ConvertFrom:              *convertFrom,
+		SaveFolder:               *destinationFolder,
+		ConvertedFilePrefix:      *convertedFilePrefix,
+		ConvertedFilePermissions: *convertedFilePermissions,
+		NewEmailPattern:          newEmailRegex,
+	}
+
+	return config
+}
+
+func getEmailStartMap(config *Config) emailStartMap {
 	emailMap := emailStartMap{}
 
-	file := openFile(fileToConvertName)
+	file := openFile(config.ConvertFrom)
 	fileScanner := createFileScanner(file)
 	defer file.Close()
 
 	for i := 0; fileScanner.Scan(); i++ {
 		line := fileScanner.Text()
-		isNewEmail := checkNewEmailStart(line)
+		isNewEmail := checkNewEmailStart(line, config)
 
 		if isNewEmail {
 			emailMap[i] = true
@@ -44,18 +82,17 @@ func getEmailStartMap(fileToConvertName string) emailStartMap {
 	return emailMap
 }
 
-func checkNewEmailStart(line string) bool {
-	regex := regexp.MustCompile(NEW_EMAIL_REGEX)
-	isNewEmail := regex.MatchString(line)
+func checkNewEmailStart(line string, config *Config) bool {
+	isNewEmail := config.NewEmailPattern.MatchString(line)
 
 	return isNewEmail
 }
 
-func converEmails(fileToConvertName string, emailMap emailStartMap) {
+func convertEmails(emailMap emailStartMap, config *Config) {
 	var fileWriter *bufio.Writer
 	processed := 0
 
-	file := openFile(fileToConvertName)
+	file := openFile(config.ConvertFrom)
 	fileScanner := createFileScanner(file)
 	defer file.Close()
 
@@ -65,7 +102,7 @@ func converEmails(fileToConvertName string, emailMap emailStartMap) {
 
 		if isNewMail {
 			processed++
-			fileWriter = setWriterToNewEmail(fileWriter, processed)
+			fileWriter = setWriterToNewEmail(fileWriter, processed, config)
 		}
 
 		if fileWriter != nil {
@@ -87,18 +124,19 @@ func openFile(fileName string) *os.File {
 	return file
 }
 
-func setWriterToNewEmail(fileWriter *bufio.Writer, number int) *bufio.Writer {
+func setWriterToNewEmail(fileWriter *bufio.Writer, number int, config *Config) *bufio.Writer {
 	if fileWriter != nil {
 		fileWriter.Flush()
 	}
-	fileName := buildSavePathName(strconv.Itoa(number))
-	fileWriter = createNewEmailFile(fileName)
+	fileName := buildSavePathName(strconv.Itoa(number), config)
+	createDirAllPath(fileName)
+	fileWriter = createNewEmailFile(fileName, config)
 
 	return fileWriter
 }
 
-func createNewEmailFile(fileName string) *bufio.Writer {
-	fileToWright, err := os.OpenFile(fileName, os.O_APPEND|os.O_WRONLY|os.O_CREATE, CREATED_FILE_PERMISSIONS)
+func createNewEmailFile(fileName string, config *Config) *bufio.Writer {
+	fileToWright, err := os.OpenFile(fileName, os.O_APPEND|os.O_WRONLY|os.O_CREATE, fs.FileMode(config.ConvertedFilePermissions))
 	check(err)
 
 	fileWriter := bufio.NewWriter(fileToWright)
@@ -107,8 +145,13 @@ func createNewEmailFile(fileName string) *bufio.Writer {
 	return fileWriter
 }
 
-func buildSavePathName(number string) string {
-	return CREATED_FILE_PREFIX + number + CREATED_FILE_EXTENSION
+func buildSavePathName(number string, config *Config) string {
+	return config.SaveFolder + "/" + config.ConvertedFilePrefix + number + DEFAULT_CREATED_FILE_EXTENSION
+}
+
+func createDirAllPath(path string) {
+	err := os.MkdirAll(filepath.Dir(path), fs.ModePerm)
+	check(err)
 }
 
 func check(err error) {
